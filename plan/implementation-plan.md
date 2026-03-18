@@ -8,7 +8,7 @@
 | **ORM** | SQLAlchemy 2.0 | 成熟稳定、支持异步、类型安全 |
 | **数据库** | SQLite | 轻量级、零配置、符合需求 |
 | **定时任务** | APScheduler | 支持cron、持久化、与FastAPI集成良好 |
-| **行情数据** | akshare (本地) | 项目内已有，`stock_bid_ask_em()` 获取实时价格 |
+| **行情数据** | akshare | `stock_bid_ask_em()` 获取实时价格 |
 | **依赖注入** | FastAPI Depends | 解耦组件 |
 | **配置管理** | pydantic-settings | 类型安全的配置 |
 | **WebSocket** | FastAPI原生 | 实时价格推送 |

@@ -1,8 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python -m pytest tests/ -v)",
-      "Bash(./venv/Scripts/python -m pytest tests/ -v)"
+      "Bash(./venv/Scripts/python -m pytest tests/ -v)",
+      "Bash(./venv/Scripts/python -m pytest tests/test_users.py tests/test_positions.py -v)",
+      "Bash(./venv/Scripts/pip install:*)"
     ]
   }
 }
