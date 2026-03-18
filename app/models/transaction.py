@@ -1,9 +1,10 @@
-from sqlalchemy import String, Numeric, Integer, ForeignKey, Text
+from datetime import datetime
+from sqlalchemy import String, Numeric, Integer, ForeignKey, Text, DateTime
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import TYPE_CHECKING, Optional
 from decimal import Decimal
 
-from .base import Base
+from .base import Base, utcnow
 
 if TYPE_CHECKING:
     from .user import User
@@ -21,6 +22,9 @@ class Transaction(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     price: Mapped[Decimal] = mapped_column(Numeric(10, 4), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
 
     # 关联
     user: Mapped["User"] = relationship("User", back_populates="transactions")

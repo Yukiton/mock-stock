@@ -3,7 +3,9 @@
     "allow": [
       "Bash(./venv/Scripts/python -m pytest tests/ -v)",
       "Bash(./venv/Scripts/python -m pytest tests/test_users.py tests/test_positions.py -v)",
-      "Bash(./venv/Scripts/pip install:*)"
+      "Bash(./venv/Scripts/pip install:*)",
+      "Bash(./venv/Scripts/python -m pytest tests/test_trade.py tests/test_portfolio.py -v)",
+      "Bash(./venv/Scripts/python -m pytest tests/ -v --tb=short)"
     ]
   }
 }
