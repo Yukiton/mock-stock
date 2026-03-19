@@ -74,8 +74,8 @@ async def test_create_price_alert(db_session, test_user):
         alert_name="突破20元提醒",
         strategy_type="THRESHOLD",
         strategy_config={"upper": 20.0, "lower": 10.0},
-        notifier_type="WEBSOCKET",
-        notifier_config={},
+        executor_type="WEBSOCKET",
+        executor_config={},
     )
     db_session.add(alert)
     await db_session.commit()

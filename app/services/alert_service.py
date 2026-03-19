@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional, List
 
-from sqlalchemy import select, and_
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import PriceAlert, Position, Transaction
@@ -12,12 +12,11 @@ from app.strategies import (
     AlertContext,
     CheckResult,
     get_strategy,
-    MCPSmartStrategy,
 )
-from app.notifiers import (
-    Notifier,
-    NotificationMessage,
-    get_notifier,
+from app.executors import (
+    ExecutionRequest,
+    ExecutionResult,
+    get_executor,
 )
 from app.quote import get_quote_provider
 from app.schemas import AlertCreate, AlertUpdate
@@ -42,8 +41,8 @@ class AlertService:
             alert_name=data.alert_name,
             strategy_type=data.strategy_type,
             strategy_config=data.strategy_config,
-            notifier_type=data.notifier_type,
-            notifier_config=data.notifier_config,
+            executor_type=data.executor_type,
+            executor_config=data.executor_config,
             enabled=True,
         )
         self.db.add(alert)
@@ -112,7 +111,7 @@ class AlertService:
         """
         检查单个提醒是否触发
 
-        构建上下文并执行策略检查
+        构建上下文并执行策略检查，返回最终决策。
         """
         strategy = get_strategy(alert.strategy_type)
         if not strategy:
@@ -121,17 +120,8 @@ class AlertService:
         # 构建上下文
         context = await self._build_context(alert.user_id, alert.stock_code)
 
-        # 执行策略检查
-        result = strategy.check(context, alert.strategy_config)
-
-        # 处理MCP智能策略
-        if alert.strategy_type == "MCP_SMART" and result.details.get("requires_ai_decision"):
-            # MCP策略需要外部AI决策
-            # 返回特殊标记，由调用方处理
-            result.details["alert_id"] = alert.id
-            result.details["user_id"] = alert.user_id
-            result.details["notifier_type"] = alert.notifier_type
-            result.details["notifier_config"] = alert.notifier_config
+        # 执行策略检查（异步）
+        result = await strategy.check(context, alert.strategy_config)
 
         return result
 
@@ -139,36 +129,122 @@ class AlertService:
         self,
         alert: PriceAlert,
         check_result: CheckResult
-    ) -> bool:
+    ) -> ExecutionResult:
         """
-        触发提醒，发送通知
+        触发提醒，执行动作
         """
-        notifier = get_notifier(alert.notifier_type)
-        if not notifier:
-            return False
+        executor = get_executor(alert.executor_type)
+        if not executor:
+            return ExecutionResult(
+                success=False,
+                action="NONE",
+                message=f"未知的执行器类型: {alert.executor_type}"
+            )
 
-        # 构建通知消息
-        message = NotificationMessage(
-            title=f"价格提醒: {alert.stock_code}",
-            content=check_result.reason or "条件已触发",
-            stock_code=alert.stock_code,
-            alert_id=alert.id,
-            extra=check_result.details
-        )
+        # 使用 CheckResult 的建议动作
+        action = check_result.suggested_action
+        if action not in ("BUY", "SELL"):
+            action = "NOTIFY"
 
-        # 发送通知
-        success = await notifier.send(
+        # 构建执行请求
+        request = ExecutionRequest(
             user_id=alert.user_id,
-            message=message,
-            config=alert.notifier_config or {}
+            stock_code=alert.stock_code,
+            action=action,
+            quantity=check_result.suggested_quantity,
+            price=check_result.suggested_price,
+            reason=check_result.reason or "条件已触发",
+            details=check_result.details
         )
+
+        # 执行
+        result = await executor.execute(request, alert.executor_config or {})
+
+        # 如果是自动交易执行器，需要实际执行交易
+        if result.success and result.details.get("requires_trade"):
+            trade_result = await self._execute_trade(alert, request, result.details.get("dry_run", False))
+            result = trade_result
 
         # 更新最后触发时间
-        if success:
+        if result.success:
             alert.last_triggered_at = datetime.now(timezone.utc)
             await self.db.commit()
 
-        return success
+        return result
+
+    async def _execute_trade(
+        self,
+        alert: PriceAlert,
+        request: ExecutionRequest,
+        dry_run: bool = False
+    ) -> ExecutionResult:
+        """
+        执行实际交易
+        """
+        if dry_run:
+            return ExecutionResult(
+                success=True,
+                action=request.action,
+                message=f"[模拟] {request.action} 成功",
+                details={
+                    "stock_code": request.stock_code,
+                    "quantity": request.quantity,
+                    "price": float(request.price) if request.price else None
+                }
+            )
+
+        # 实际交易逻辑
+        from app.services import TradeService
+
+        try:
+            trade_service = TradeService(self.db)
+
+            # 获取当前价格（如果没有指定）
+            price = request.price
+            if not price:
+                provider = get_quote_provider()
+                quote = provider.get_quote(request.stock_code)
+                if quote and quote.current_price:
+                    price = quote.current_price
+                else:
+                    return ExecutionResult(
+                        success=False,
+                        action=request.action,
+                        message="无法获取当前价格"
+                    )
+
+            if request.action == "BUY":
+                transaction = await trade_service.buy(
+                    user_id=request.user_id,
+                    stock_code=request.stock_code,
+                    quantity=request.quantity or 100,
+                    price=price
+                )
+            else:  # SELL
+                transaction = await trade_service.sell(
+                    user_id=request.user_id,
+                    stock_code=request.stock_code,
+                    quantity=request.quantity or 100,
+                    price=price
+                )
+
+            return ExecutionResult(
+                success=True,
+                action=request.action,
+                message=f"{request.action} 成功",
+                details={
+                    "transaction_id": transaction.id,
+                    "stock_code": request.stock_code,
+                    "quantity": transaction.quantity,
+                    "price": float(transaction.price)
+                }
+            )
+        except Exception as e:
+            return ExecutionResult(
+                success=False,
+                action=request.action,
+                message=f"交易执行失败: {str(e)}"
+            )
 
     async def check_all_alerts(self, user_id: Optional[int] = None) -> List[dict]:
         """
@@ -191,13 +267,16 @@ class AlertService:
         for alert in alerts:
             try:
                 check_result = await self.check_alert(alert)
+
                 if check_result.triggered:
-                    success = await self.trigger_alert(alert, check_result)
+                    exec_result = await self.trigger_alert(alert, check_result)
                     triggered.append({
                         "alert_id": alert.id,
                         "stock_code": alert.stock_code,
                         "reason": check_result.reason,
-                        "notified": success
+                        "action": exec_result.action,
+                        "success": exec_result.success,
+                        "message": exec_result.message
                     })
             except Exception as e:
                 triggered.append({
@@ -327,17 +406,16 @@ class AlertService:
                 return []
 
             # 转换为列表（从新到旧）
-            # 列名可能是中文：日期、开盘、收盘、最高、最低、成交量、成交额
             prices = []
             for _, row in df.iloc[-limit:].iterrows():
                 prices.append({
-                    "date": str(row.iloc[0]) if len(row) > 0 else None,  # 日期
-                    "open": float(row.iloc[1]) if len(row) > 1 else None,  # 开盘
-                    "close": float(row.iloc[2]) if len(row) > 2 else None,  # 收盘
-                    "high": float(row.iloc[3]) if len(row) > 3 else None,  # 最高
-                    "low": float(row.iloc[4]) if len(row) > 4 else None,   # 最低
-                    "volume": float(row.iloc[5]) if len(row) > 5 else None,  # 成交量
-                    "amount": float(row.iloc[6]) if len(row) > 6 else None,  # 成交额
+                    "date": str(row.iloc[0]) if len(row) > 0 else None,
+                    "open": float(row.iloc[1]) if len(row) > 1 else None,
+                    "close": float(row.iloc[2]) if len(row) > 2 else None,
+                    "high": float(row.iloc[3]) if len(row) > 3 else None,
+                    "low": float(row.iloc[4]) if len(row) > 4 else None,
+                    "volume": float(row.iloc[5]) if len(row) > 5 else None,
+                    "amount": float(row.iloc[6]) if len(row) > 6 else None,
                 })
 
             # 反转为从新到旧

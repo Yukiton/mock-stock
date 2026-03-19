@@ -13,7 +13,9 @@ class MACDStrategy(AlertStrategy):
         "fast": 12,           # 快线周期
         "slow": 26,           # 慢线周期
         "signal": 9,          # 信号线周期
-        "type": "golden_cross" # 触发类型: "golden_cross"(金叉), "death_cross"(死叉), "both"
+        "type": "golden_cross", # 触发类型: "golden_cross"(金叉), "death_cross"(死叉), "both"
+        "action_on_golden": "BUY",  # 金叉时的动作（默认买入）
+        "action_on_death": "SELL"   # 死叉时的动作（默认卖出）
     }
     """
 
@@ -21,11 +23,15 @@ class MACDStrategy(AlertStrategy):
     def strategy_type(self) -> str:
         return "MACD"
 
-    def check(self, context: AlertContext, config: dict) -> CheckResult:
+    async def check(self, context: AlertContext, config: dict) -> CheckResult:
         fast = config.get("fast", 12)
         slow = config.get("slow", 26)
         signal_period = config.get("signal", 9)
         cross_type = config.get("type", "both")
+
+        # 获取动作配置
+        action_on_golden = config.get("action_on_golden", "BUY")
+        action_on_death = config.get("action_on_death", "SELL")
 
         # 从indicators获取或计算MACD
         macd_data = context.indicators.get("macd")
@@ -61,12 +67,14 @@ class MACDStrategy(AlertStrategy):
             return CheckResult(
                 triggered=True,
                 reason=f"MACD金叉: MACD({macd:.4f}) > Signal({signal:.4f})",
+                suggested_action=action_on_golden,
                 details=details
             )
         elif cross_type in ("death_cross", "both") and is_death_cross:
             return CheckResult(
                 triggered=True,
                 reason=f"MACD死叉: MACD({macd:.4f}) < Signal({signal:.4f})",
+                suggested_action=action_on_death,
                 details=details
             )
 

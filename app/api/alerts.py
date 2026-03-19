@@ -10,7 +10,7 @@ from app.schemas import AlertCreate, AlertUpdate, AlertResponse
 from app.services import AlertService
 from app.auth import get_current_active_user
 from app.strategies import list_strategies
-from app.notifiers import list_notifiers
+from app.executors import list_executors
 
 router = APIRouter()
 
@@ -46,11 +46,11 @@ async def create_alert(
             detail=f"不支持的策略类型: {data.strategy_type}"
         )
 
-    # 验证通知器类型
-    if data.notifier_type not in list_notifiers():
+    # 验证执行器类型
+    if data.executor_type not in list_executors():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"不支持的通知器类型: {data.notifier_type}"
+            detail=f"不支持的执行器类型: {data.executor_type}"
         )
 
     service = AlertService(db)
@@ -132,13 +132,16 @@ async def check_alert(
         "stock_code": alert.stock_code,
         "triggered": result.triggered,
         "reason": result.reason,
+        "suggested_action": result.suggested_action,
         "details": result.details
     }
 
-    # 如果触发，发送通知
+    # 如果触发，执行动作
     if result.triggered:
-        success = await service.trigger_alert(alert, result)
-        response["notified"] = success
+        exec_result = await service.trigger_alert(alert, result)
+        response["executed"] = exec_result.success
+        response["action"] = exec_result.action
+        response["message"] = exec_result.message
 
     return response
 
@@ -160,7 +163,7 @@ async def get_available_strategies():
     return {"strategies": list_strategies()}
 
 
-@router.get("/meta/notifiers")
-async def get_available_notifiers():
-    """获取可用的通知器类型"""
-    return {"notifiers": list_notifiers()}
+@router.get("/meta/executors")
+async def get_available_executors():
+    """获取可用的执行器类型"""
+    return {"executors": list_executors()}

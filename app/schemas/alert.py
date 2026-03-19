@@ -16,15 +16,15 @@ class AlertCreate(AlertBase):
     """创建提醒"""
     strategy_type: Literal["THRESHOLD", "MA", "MACD", "RSI", "MCP_SMART", "CUSTOM"]
     strategy_config: dict[str, Any] = Field(..., description="策略配置")
-    notifier_type: Literal["WEBSOCKET", "SMTP", "WEBHOOK", "MCP"]
-    notifier_config: Optional[dict[str, Any]] = Field(None, description="通知器配置")
+    executor_type: Literal["AUTO_TRADE", "WEBSOCKET", "WEBHOOK"]
+    executor_config: Optional[dict[str, Any]] = Field(None, description="执行器配置")
 
 
 class AlertUpdate(BaseModel):
     """更新提醒"""
     alert_name: Optional[str] = Field(None, max_length=100)
     strategy_config: Optional[dict[str, Any]] = None
-    notifier_config: Optional[dict[str, Any]] = None
+    executor_config: Optional[dict[str, Any]] = None
     enabled: Optional[bool] = None
 
 
@@ -36,8 +36,8 @@ class AlertResponse(BaseSchema):
     alert_name: Optional[str]
     strategy_type: str
     strategy_config: dict[str, Any]
-    notifier_type: str
-    notifier_config: Optional[dict[str, Any]]
+    executor_type: str
+    executor_config: Optional[dict[str, Any]]
     enabled: bool
     last_triggered_at: Optional[datetime]
     created_at: datetime

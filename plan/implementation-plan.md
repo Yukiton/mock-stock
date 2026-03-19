@@ -74,8 +74,8 @@ CREATE TABLE price_alerts (
     alert_name TEXT,                    -- 提醒名称
     strategy_type TEXT NOT NULL,        -- THRESHOLD/MA/MACD/RSI/CUSTOM
     strategy_config JSON NOT NULL,      -- 策略参数配置
-    notifier_type TEXT NOT NULL,        -- WEBSOCKET/SMTP/WEBHOOK/MCP
-    notifier_config JSON,               -- 通知器配置
+    notifier_type TEXT NOT NULL,        -- AUTO_TRADE/WEBSOCKET/WEBHOOK
+    notifier_config JSON,               -- 执行器配置
     enabled BOOLEAN DEFAULT TRUE,
     last_triggered_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -337,66 +337,105 @@ MAStrategy         RSIStrategy         MCPSmartStrategy
 (直接使用)         (直接使用)          (_format_indicators格式化后交给AI)
 ```
 
-### 4.3 通知器（抽象类）
+### 4.3 执行器（抽象类）
+
+执行器负责策略触发后的动作，策略器只返回 true/false + 建议操作，执行器负责具体执行。
 
 ```python
 from abc import ABC, abstractmethod
 from typing import Any
+from dataclasses import dataclass
 
-class Notifier(ABC):
-    """通知器抽象基类"""
+@dataclass
+class ExecutionRequest:
+    """执行请求"""
+    user_id: int
+    stock_code: str
+    action: str  # "BUY" / "SELL" / "NOTIFY"
+    quantity: int | None = None
+    price: float | None = None
+    reason: str = ""
+    details: dict[str, Any] = None
+
+class Executor(ABC):
+    """执行器抽象基类"""
 
     @property
     @abstractmethod
-    def notifier_type(self) -> str:
-        """通知器类型标识，如 'WEBSOCKET', 'SMTP', 'WEBHOOK', 'MCP'"""
+    def executor_type(self) -> str:
+        """执行器类型标识"""
         pass
 
     @abstractmethod
-    async def send(
-        self,
-        user_id: int,
-        title: str,
-        message: str,
-        config: dict[str, Any]
-    ) -> bool:
+    async def execute(self, request: ExecutionRequest) -> bool:
         """
-        发送通知
+        执行动作
 
         Args:
-            user_id: 目标用户ID
-            title: 通知标题
-            message: 通知内容
-            config: 通知器配置
+            request: 执行请求
 
         Returns:
-            True 表示发送成功
+            True 表示执行成功
         """
         pass
 ```
 
-#### 通知器实现示例
+#### 执行器实现示例
 
 ```python
-# WebSocket通知
-class WebSocketNotifier(Notifier):
+# 自动交易执行器
+class AutoTradeExecutor(Executor):
     """
-    config: {}  # 无需额外配置，基于用户WebSocket连接
+    executor_type: "AUTO_TRADE"
+
+    收到触发后自动调用交易API完成买入/卖出。
+    适用于：AI自动模拟交易、传统量化自动交易。
     """
 
-# Webhook通知
-class WebhookNotifier(Notifier):
+    async def execute(self, request: ExecutionRequest) -> bool:
+        if request.action == "BUY":
+            # 调用 TradeService.buy()
+            pass
+        elif request.action == "SELL":
+            # 调用 TradeService.sell()
+            pass
+        return True
+
+# WebSocket通知执行器
+class WebSocketExecutor(Executor):
     """
-    config: {"url": "https://example.com/webhook", "method": "POST"}
+    executor_type: "WEBSOCKET"
+
+    通过WebSocket推送消息给用户。
+    适用于：AI建议人工执行、传统量化信号提醒。
     """
 
-# MCP通知
-class MCPNotifier(Notifier):
+    async def execute(self, request: ExecutionRequest) -> bool:
+        # 推送消息到用户
+        pass
+
+# Webhook执行器
+class WebhookExecutor(Executor):
     """
-    config: {"server_name": "my-mcp-server", "tool": "send_notification"}
-    通过MCP协议调用外部工具，将通知放入队列供MCP服务消费
+    executor_type: "WEBHOOK"
+
+    调用外部HTTP接口。
+    适用于：对接第三方通知服务。
     """
+
+    async def execute(self, request: ExecutionRequest) -> bool:
+        # 发送HTTP请求
+        pass
 ```
+
+#### 策略器与执行器的组合
+
+| 策略器 | 执行器 | 场景 |
+|--------|--------|------|
+| MAStrategy | AutoTradeExecutor | 均线突破自动交易 |
+| RSIStrategy | WebSocketExecutor | RSI信号提醒 |
+| MCPSmartStrategy | AutoTradeExecutor | AI自动模拟交易 |
+| MCPSmartStrategy | WebSocketExecutor | AI建议人工执行 |
 
 ---
 
@@ -458,16 +497,16 @@ mock-stock/
 │   │   ├── ma.py                  # 均线策略（使用quant模块）
 │   │   ├── macd.py                # MACD策略（使用quant模块）
 │   │   ├── rsi.py                 # RSI策略（使用quant模块）
-│   │   ├── mcp.py                 # MCP智能策略（综合决策）
+│   │   ├── mcp.py                 # MCP智能策略（AI综合决策）
 │   │   └── registry.py            # 策略注册表
 │   │
-│   ├── notifiers/                 # 通知器
+│   ├── executors/                 # 执行器
 │   │   ├── __init__.py
-│   │   ├── base.py                # Notifier抽象基类
-│   │   ├── websocket.py           # WebSocket通知
-│   │   ├── webhook.py             # Webhook通知
-│   │   ├── mcp.py                 # MCP通知（队列模式）
-│   │   └── registry.py            # 通知器注册表
+│   │   ├── base.py                # Executor抽象基类
+│   │   ├── auto_trade.py          # 自动交易执行器
+│   │   ├── websocket.py           # WebSocket通知执行器
+│   │   ├── webhook.py             # Webhook执行器
+│   │   └── registry.py            # 执行器注册表
 │   │
 │   ├── quote/                     # 行情数据
 │   │   ├── __init__.py
@@ -517,7 +556,7 @@ mock-stock/
 | **Phase 1** | 项目初始化、配置、数据库模型 | ✅ 已完成 |
 | **Phase 2** | 用户API、持仓管理API | ✅ 已完成 |
 | **Phase 3** | 交易API、资产估值API（雪球行情） | ✅ 已完成 |
-| **Phase 4** | 价格提醒系统（策略抽象+通知器抽象+MCP智能决策） | ✅ 已完成 |
+| **Phase 4** | 价格提醒系统（策略抽象+执行器抽象+AI智能决策） | ✅ 已完成 |
 | **Phase 5** | 定时任务系统（APScheduler集成） | 📋 待开发 |
 | **Phase 6** | WebSocket实时推送 | 📋 待开发 |
 

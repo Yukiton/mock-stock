@@ -14,7 +14,9 @@ class MAStrategy(AlertStrategy):
 
     config: {
         "period": 5,           # 均线周期（5/10/20/60等）
-        "direction": "up"      # 突破方向: "up"(向上突破), "down"(向下突破), "both"(双向)
+        "direction": "up",     # 突破方向: "up"(向上突破), "down"(向下突破), "both"(双向)
+        "action_on_up": "BUY",    # 向上突破时的动作（默认买入）
+        "action_on_down": "SELL"  # 向下跌破时的动作（默认卖出）
     }
     """
 
@@ -22,9 +24,13 @@ class MAStrategy(AlertStrategy):
     def strategy_type(self) -> str:
         return "MA"
 
-    def check(self, context: AlertContext, config: dict) -> CheckResult:
+    async def check(self, context: AlertContext, config: dict) -> CheckResult:
         period = config.get("period", 5)
         direction = config.get("direction", "both")
+
+        # 获取动作配置
+        action_on_up = config.get("action_on_up", "BUY")
+        action_on_down = config.get("action_on_down", "SELL")
 
         # 从indicators中获取均线值（由AlertService调用quant模块计算）
         ma_key = f"ma{period}"
@@ -58,18 +64,21 @@ class MAStrategy(AlertStrategy):
             return CheckResult(
                 triggered=True,
                 reason=f"价格 {price} 向上突破MA{period}({ma:.2f})",
+                suggested_action=action_on_up,
                 details=details
             )
         elif direction == "down" and not is_above:
             return CheckResult(
                 triggered=True,
                 reason=f"价格 {price} 向下跌破MA{period}({ma:.2f})",
+                suggested_action=action_on_down,
                 details=details
             )
         elif direction == "both":
             return CheckResult(
                 triggered=True,
                 reason=f"价格 {price} 突破MA{period}({ma:.2f})，方向: {'向上' if is_above else '向下'}",
+                suggested_action=action_on_up if is_above else action_on_down,
                 details=details
             )
 

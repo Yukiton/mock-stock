@@ -13,7 +13,9 @@ class RSIStrategy(AlertStrategy):
         "period": 14,          # RSI周期
         "overbought": 70,      # 超买阈值
         "oversold": 30,        # 超卖阈值
-        "type": "both"         # "overbought"(超买), "oversold"(超卖), "both"
+        "type": "both",        # "overbought"(超买), "oversold"(超卖), "both"
+        "action_on_overbought": "SELL",  # 超买时的动作（默认卖出）
+        "action_on_oversold": "BUY"      # 超卖时的动作（默认买入）
     }
     """
 
@@ -21,11 +23,15 @@ class RSIStrategy(AlertStrategy):
     def strategy_type(self) -> str:
         return "RSI"
 
-    def check(self, context: AlertContext, config: dict) -> CheckResult:
+    async def check(self, context: AlertContext, config: dict) -> CheckResult:
         period = config.get("period", 14)
         overbought = config.get("overbought", 70)
         oversold = config.get("oversold", 30)
         alert_type = config.get("type", "both")
+
+        # 获取动作配置
+        action_on_overbought = config.get("action_on_overbought", "SELL")
+        action_on_oversold = config.get("action_on_oversold", "BUY")
 
         # 从indicators获取或计算RSI
         rsi_key = f"rsi{period}"
@@ -51,12 +57,14 @@ class RSIStrategy(AlertStrategy):
             return CheckResult(
                 triggered=True,
                 reason=f"RSI({rsi:.2f})进入超买区域(>{overbought})",
+                suggested_action=action_on_overbought,
                 details=details
             )
         elif alert_type in ("oversold", "both") and rsi <= oversold:
             return CheckResult(
                 triggered=True,
                 reason=f"RSI({rsi:.2f})进入超卖区域(<{oversold})",
+                suggested_action=action_on_oversold,
                 details=details
             )
 

@@ -18,10 +18,10 @@ class PriceAlert(Base, TimestampMixin):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     stock_code: Mapped[str] = mapped_column(String(10), nullable=False, index=True)
     alert_name: Mapped[Optional[str]] = mapped_column(String(100))
-    strategy_type: Mapped[str] = mapped_column(String(20), nullable=False)  # THRESHOLD/MA/MACD/RSI/CUSTOM
+    strategy_type: Mapped[str] = mapped_column(String(20), nullable=False)  # THRESHOLD/MA/MACD/RSI/MCP_SMART
     strategy_config: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
-    notifier_type: Mapped[str] = mapped_column(String(20), nullable=False)  # WEBSOCKET/SMTP/WEBHOOK/MCP
-    notifier_config: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+    executor_type: Mapped[str] = mapped_column(String(20), nullable=False)  # AUTO_TRADE/WEBSOCKET/WEBHOOK
+    executor_config: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_triggered_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 

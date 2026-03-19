@@ -11,7 +11,7 @@ class AlertContext:
     """
     价格提醒上下文信息
 
-    包含大模型决策所需的全部数据：
+    包含决策所需的全部数据：
     - 用户持仓
     - 交易记录
     - 当前行情
@@ -37,11 +37,9 @@ class AlertContext:
 
     # 量化指标结果（由量化工具计算后填入）
     indicators: dict[str, Any] = field(default_factory=dict)
-    # 例如: {"ma5": 10.5, "ma10": 10.2, "macd": 0.1, "rsi": 65, ...}
 
     # 相关新闻（可选）
     news: list[dict[str, Any]] = field(default_factory=list)
-    # 例如: [{"title": "...", "summary": "...", "sentiment": "positive"}]
 
     # 历史价格数据（用于量化计算）
     history_prices: list[dict[str, Any]] = field(default_factory=list)
@@ -49,9 +47,16 @@ class AlertContext:
 
 @dataclass
 class CheckResult:
-    """策略检查结果"""
+    """
+    策略检查结果
+
+    所有策略统一返回此格式，直接传给执行器。
+    """
     triggered: bool
     reason: Optional[str] = None
+    suggested_action: str = "NOTIFY"  # "BUY" / "SELL" / "NOTIFY" / "HOLD"
+    suggested_quantity: Optional[int] = None
+    suggested_price: Optional[Decimal] = None
     details: dict[str, Any] = field(default_factory=dict)
 
 
@@ -65,29 +70,15 @@ class AlertStrategy(ABC):
         pass
 
     @abstractmethod
-    def check(self, context: AlertContext, config: dict[str, Any]) -> CheckResult:
+    async def check(self, context: AlertContext, config: dict[str, Any]) -> CheckResult:
         """
-        检查是否触发提醒
+        检查是否触发提醒（异步方法）
 
         Args:
             context: 包含行情、持仓、交易记录、量化指标等上下文信息
             config: 策略配置参数
 
         Returns:
-            CheckResult 包含是否触发、原因和详情
+            CheckResult 包含是否触发、原因、建议动作等，直接传给执行器
         """
         pass
-
-    def calculate_indicators(self, context: AlertContext) -> dict[str, Any]:
-        """
-        计算量化指标（可选实现）
-
-        子类可覆盖此方法以计算需要的指标
-
-        Args:
-            context: 上下文信息
-
-        Returns:
-            计算出的指标字典，会被合并到 context.indicators 中
-        """
-        return {}
