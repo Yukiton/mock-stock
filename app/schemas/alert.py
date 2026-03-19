@@ -14,7 +14,7 @@ class AlertBase(BaseModel):
 
 class AlertCreate(AlertBase):
     """创建提醒"""
-    strategy_type: Literal["THRESHOLD", "MA", "MACD", "RSI", "CUSTOM"]
+    strategy_type: Literal["THRESHOLD", "MA", "MACD", "RSI", "MCP_SMART", "CUSTOM"]
     strategy_config: dict[str, Any] = Field(..., description="策略配置")
     notifier_type: Literal["WEBSOCKET", "SMTP", "WEBHOOK", "MCP"]
     notifier_config: Optional[dict[str, Any]] = Field(None, description="通知器配置")
