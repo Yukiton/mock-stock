@@ -170,12 +170,81 @@ CREATE TABLE cron_jobs (
 
 ## 四、核心抽象设计
 
-### 4.1 价格提醒策略（抽象类）
+### 4.1 量化工具模块（独立模块）
+
+量化计算逻辑独立于策略，便于复用和测试。
+
+```python
+# app/quant/indicators.py
+
+def calculate_ma(prices: list[float], period: int) -> float | None:
+    """计算简单移动平均线"""
+    pass
+
+def calculate_ema(prices: list[float], period: int) -> float | None:
+    """计算指数移动平均线"""
+    pass
+
+def calculate_macd(prices: list[float], fast=12, slow=26, signal=9) -> dict | None:
+    """计算MACD指标"""
+    pass
+
+def calculate_rsi(prices: list[float], period=14) -> dict | None:
+    """计算RSI指标"""
+    pass
+
+def calculate_bollinger(prices: list[float], period=20, std_dev=2.0) -> dict | None:
+    """计算布林带"""
+    pass
+
+def calculate_all_indicators(prices: list[float]) -> dict:
+    """一次性计算所有指标，返回统一结果"""
+    pass
+```
+
+**设计原则**：
+- 所有函数接收价格列表（从新到旧排序）
+- 返回值均为基本类型（float/dict），便于序列化
+- 计算逻辑独立，不依赖外部状态
+
+**调用方**：
+1. `AlertService._build_context()` 构建上下文时调用，结果存入 `context.indicators`
+2. 策略类可按需调用（如历史数据不足时补充计算）
+3. MCP 智能策略通过 `context.indicators` 获取结果
+
+---
+
+### 4.2 价格提醒策略（抽象类）
 
 ```python
 from abc import ABC, abstractmethod
-from typing import Any
-import pandas as pd
+from dataclasses import dataclass, field
+from decimal import Decimal
+from typing import Any, Optional
+
+@dataclass
+class AlertContext:
+    """策略检查上下文"""
+    stock_code: str
+    current_price: Decimal
+    open_price: Optional[Decimal] = None
+    high_price: Optional[Decimal] = None
+    low_price: Optional[Decimal] = None
+    prev_close: Optional[Decimal] = None
+    volume: Optional[int] = None
+    # 持仓信息
+    position_quantity: Optional[int] = None
+    position_avg_cost: Optional[Decimal] = None
+    position_profit_loss: Optional[Decimal] = None
+    position_profit_loss_percent: Optional[float] = None
+    # 历史数据
+    history_prices: list[dict[str, Any]] = field(default_factory=list)
+    recent_transactions: list[dict[str, Any]] = field(default_factory=list)
+    # 量化指标（由AlertService调用quant模块计算）
+    indicators: dict[str, Any] = field(default_factory=dict)
+    # 新闻
+    news: list[dict[str, Any]] = field(default_factory=list)
+
 
 class AlertStrategy(ABC):
     """价格提醒策略抽象基类"""
@@ -183,26 +252,20 @@ class AlertStrategy(ABC):
     @property
     @abstractmethod
     def strategy_type(self) -> str:
-        """策略类型标识，如 'THRESHOLD', 'MA', 'MACD', 'RSI'"""
+        """策略类型标识"""
         pass
 
     @abstractmethod
-    def check(
-        self,
-        current_price: float,
-        history_prices: pd.DataFrame,  # 包含 open/high/low/close/volume
-        config: dict[str, Any]
-    ) -> bool:
+    def check(self, context: AlertContext, config: dict) -> CheckResult:
         """
         检查是否触发提醒
 
         Args:
-            current_price: 当前价格
-            history_prices: 历史行情数据
+            context: 包含行情、持仓、量化指标等的上下文
             config: 策略配置参数
 
         Returns:
-            True 表示触发提醒
+            CheckResult 包含是否触发、原因、详情
         """
         pass
 ```
@@ -210,36 +273,71 @@ class AlertStrategy(ABC):
 #### 策略实现示例
 
 ```python
-# 阈值策略
-class ThresholdAlertStrategy(AlertStrategy):
+# 阈值策略 - 不依赖量化指标
+class ThresholdStrategy(AlertStrategy):
     """
-    config: {"upper": 100.0, "lower": 50.0}
+    config: {"upper": 100.0, "lower": 50.0, "percent_upper": 5.0}
     价格突破上限或下限时触发
     """
 
-# 均线策略
+# 均线策略 - 从context.indicators获取MA值
 class MAStrategy(AlertStrategy):
     """
     config: {"period": 5, "direction": "up"}
-    价格向上/向下突破均线时触发
+    从context.indicators["ma5"]获取均线值
     """
 
-# MACD策略
+# MACD策略 - 从context.indicators获取MACD值
 class MACDStrategy(AlertStrategy):
     """
-    config: {"fast": 12, "slow": 26, "signal": 9}
-    MACD金叉/死叉时触发
+    config: {"trigger": "golden_cross"}  # golden_cross / death_cross
+    从context.indicators["macd_*"]获取指标
     """
 
-# RSI策略
+# RSI策略 - 从context.indicators获取RSI值
 class RSIStrategy(AlertStrategy):
     """
     config: {"period": 14, "overbought": 70, "oversold": 30}
-    RSI进入超买/超卖区域时触发
+    从context.indicators["rsi14_*"]获取指标
+    """
+
+# MCP智能策略 - 综合判断
+class MCPSmartStrategy(AlertStrategy):
+    """
+    config: {"mcp_server": "...", "tool": "...", "min_confidence": 0.7}
+
+    工作流程：
+    1. AlertService._build_context() 调用 quant.calculate_all_indicators()
+    2. 指标结果存入 context.indicators（扁平化格式）:
+       - ma5, ma10, ma20, ma60
+       - ema12, ema26
+       - macd_macd, macd_signal, macd_histogram, macd_trend
+       - rsi6_rsi, rsi6_zone, rsi14_rsi, rsi14_zone
+       - bollinger_upper, bollinger_middle, bollinger_lower
+    3. MCPSmartStrategy._format_indicators() 格式化指标为易读格式
+    4. 构建AI上下文，包含：股票信息、持仓、交易记录、量化指标、新闻
+    5. 返回 requires_ai_decision=True，由外部MCP服务决策
     """
 ```
 
-### 4.2 通知器（抽象类）
+**量化指标流向**：
+
+```
+akshare历史数据
+       ↓
+AlertService._get_history_prices()
+       ↓
+quant.calculate_all_indicators(closes)
+       ↓
+context.indicators (扁平化字典)
+       ↓
+┌──────────────────┬─────────────────────┐
+│                  │                     │
+MAStrategy         RSIStrategy         MCPSmartStrategy
+(直接使用)         (直接使用)          (_format_indicators格式化后交给AI)
+```
+
+### 4.3 通知器（抽象类）
 
 ```python
 from abc import ABC, abstractmethod
@@ -286,13 +384,6 @@ class WebSocketNotifier(Notifier):
     config: {}  # 无需额外配置，基于用户WebSocket连接
     """
 
-# SMTP邮件通知
-class SMTPNotifier(Notifier):
-    """
-    config: {"to_email": "user@example.com"}
-    需要全局SMTP配置
-    """
-
 # Webhook通知
 class WebhookNotifier(Notifier):
     """
@@ -303,7 +394,7 @@ class WebhookNotifier(Notifier):
 class MCPNotifier(Notifier):
     """
     config: {"server_name": "my-mcp-server", "tool": "send_notification"}
-    通过MCP协议调用外部工具
+    通过MCP协议调用外部工具，将通知放入队列供MCP服务消费
     """
 ```
 
@@ -344,7 +435,7 @@ mock-stock/
 │   │   ├── positions.py
 │   │   ├── portfolio.py
 │   │   ├── trade.py
-│   │   ├── alerts.py              # (待实现)
+│   │   ├── alerts.py              # ✅ 已实现
 │   │   ├── cron.py                # (待实现)
 │   │   └── quote.py
 │   │
@@ -354,24 +445,28 @@ mock-stock/
 │   │   ├── position_service.py
 │   │   ├── trade_service.py
 │   │   ├── portfolio_service.py
-│   │   └── alert_service.py       # (待实现)
+│   │   └── alert_service.py       # ✅ 已实现（调用quant模块）
+│   │
+│   ├── quant/                     # 量化指标计算（独立模块）
+│   │   ├── __init__.py
+│   │   └── indicators.py          # MA/EMA/MACD/RSI/Bollinger
 │   │
 │   ├── strategies/                # 价格提醒策略
 │   │   ├── __init__.py
-│   │   ├── base.py                # AlertStrategy抽象基类
+│   │   ├── base.py                # AlertStrategy + AlertContext
 │   │   ├── threshold.py           # 阈值策略
-│   │   ├── ma.py                  # 均线策略
-│   │   ├── macd.py                # MACD策略
-│   │   ├── rsi.py                 # RSI策略
+│   │   ├── ma.py                  # 均线策略（使用quant模块）
+│   │   ├── macd.py                # MACD策略（使用quant模块）
+│   │   ├── rsi.py                 # RSI策略（使用quant模块）
+│   │   ├── mcp.py                 # MCP智能策略（综合决策）
 │   │   └── registry.py            # 策略注册表
 │   │
 │   ├── notifiers/                 # 通知器
 │   │   ├── __init__.py
 │   │   ├── base.py                # Notifier抽象基类
 │   │   ├── websocket.py           # WebSocket通知
-│   │   ├── smtp.py                # 邮件通知
 │   │   ├── webhook.py             # Webhook通知
-│   │   ├── mcp.py                 # MCP通知
+│   │   ├── mcp.py                 # MCP通知（队列模式）
 │   │   └── registry.py            # 通知器注册表
 │   │
 │   ├── quote/                     # 行情数据
@@ -398,7 +493,8 @@ mock-stock/
 │   ├── test_positions.py
 │   ├── test_trade.py
 │   ├── test_portfolio.py
-│   └── test_alerts.py             # (待实现)
+│   ├── test_alerts.py             # ✅ 已实现
+│   └── test_quant.py              # ✅ 已实现
 │
 ├── plan/                          # 文档
 │   ├── requirements.md
