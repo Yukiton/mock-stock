@@ -1,3 +1,5 @@
+"""策略 Schema"""
+
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional, Literal, Any
@@ -6,34 +8,34 @@ from pydantic import BaseModel, Field
 from .common import BaseSchema
 
 
-class AlertBase(BaseModel):
-    """提醒基础信息"""
+class StrategyBase(BaseModel):
+    """策略基础信息"""
     stock_code: str = Field(..., min_length=1, max_length=10)
-    alert_name: Optional[str] = Field(None, max_length=100)
+    strategy_name: Optional[str] = Field(None, max_length=100)
 
 
-class AlertCreate(AlertBase):
-    """创建提醒"""
+class StrategyCreate(StrategyBase):
+    """创建策略"""
     strategy_type: Literal["THRESHOLD", "MA", "MACD", "RSI", "MCP_SMART", "CUSTOM"]
     strategy_config: dict[str, Any] = Field(..., description="策略配置")
     executor_type: Literal["AUTO_TRADE", "WEBSOCKET", "WEBHOOK"]
     executor_config: Optional[dict[str, Any]] = Field(None, description="执行器配置")
 
 
-class AlertUpdate(BaseModel):
-    """更新提醒"""
-    alert_name: Optional[str] = Field(None, max_length=100)
+class StrategyUpdate(BaseModel):
+    """更新策略"""
+    strategy_name: Optional[str] = Field(None, max_length=100)
     strategy_config: Optional[dict[str, Any]] = None
     executor_config: Optional[dict[str, Any]] = None
     enabled: Optional[bool] = None
 
 
-class AlertResponse(BaseSchema):
-    """提醒响应"""
+class StrategyResponse(BaseSchema):
+    """策略响应"""
     id: int
     user_id: int
     stock_code: str
-    alert_name: Optional[str]
+    strategy_name: Optional[str]
     strategy_type: str
     strategy_config: dict[str, Any]
     executor_type: str

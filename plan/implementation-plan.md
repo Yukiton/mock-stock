@@ -64,18 +64,18 @@ CREATE TABLE transactions (
 );
 ```
 
-### 2.4 price_alerts (价格提醒表)
+### 2.4 strategies (策略表)
 
 ```sql
-CREATE TABLE price_alerts (
+CREATE TABLE strategies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
     stock_code TEXT NOT NULL,
-    alert_name TEXT,                    -- 提醒名称
-    strategy_type TEXT NOT NULL,        -- THRESHOLD/MA/MACD/RSI/CUSTOM
+    strategy_name TEXT,                 -- 策略名称
+    strategy_type TEXT NOT NULL,        -- THRESHOLD/MA/MACD/RSI/MCP_SMART
     strategy_config JSON NOT NULL,      -- 策略参数配置
-    notifier_type TEXT NOT NULL,        -- AUTO_TRADE/WEBSOCKET/WEBHOOK
-    notifier_config JSON,               -- 执行器配置
+    executor_type TEXT NOT NULL,        -- AUTO_TRADE/WEBSOCKET/WEBHOOK
+    executor_config JSON,               -- 执行器配置
     enabled BOOLEAN DEFAULT TRUE,
     last_triggered_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -92,7 +92,7 @@ CREATE TABLE cron_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     cron_expression TEXT NOT NULL,      -- cron表达式
-    job_type TEXT NOT NULL,             -- PRICE_CHECK/ALERT_CHECK/CUSTOM
+    job_type TEXT NOT NULL,             -- STRATEGY_CHECK/CUSTOM
     config JSON,                        -- 任务配置
     enabled BOOLEAN DEFAULT TRUE,
     last_run_at DATETIME,
@@ -140,14 +140,17 @@ CREATE TABLE cron_jobs (
 | POST | `/api/v1/trade/sell` | 卖出（可自定义价格） |
 | GET | `/api/v1/trade/history` | 交易历史记录 |
 
-### 3.5 价格提醒
+### 3.5 策略管理
 
 | 方法 | 路径 | 描述 |
 |------|------|------|
-| GET | `/api/v1/alerts` | 获取提醒列表 |
-| POST | `/api/v1/alerts` | 新增价格提醒 |
-| PUT | `/api/v1/alerts/{id}` | 修改价格提醒 |
-| DELETE | `/api/v1/alerts/{id}` | 删除价格提醒 |
+| GET | `/api/v1/strategies` | 获取策略列表 |
+| POST | `/api/v1/strategies` | 新增策略 |
+| GET | `/api/v1/strategies/{id}` | 获取策略详情 |
+| PUT | `/api/v1/strategies/{id}` | 修改策略 |
+| DELETE | `/api/v1/strategies/{id}` | 删除策略 |
+| GET | `/api/v1/strategies/meta/types` | 获取可用策略类型 |
+| GET | `/api/v1/strategies/meta/executors` | 获取可用执行器类型 |
 
 ### 3.6 定时任务
 
@@ -168,38 +171,88 @@ CREATE TABLE cron_jobs (
 
 ---
 
-## 四、核心抽象设计
+## 四、核心架构设计
 
-### 4.1 量化工具模块（独立模块）
+### 4.1 架构概览
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                           用户层                                 │
+│  用户通过 API 创建策略，配置"什么条件下做什么"                      │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        StrategyService                          │
+│  职责：策略 CRUD（创建、查询、更新、删除）                          │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                         strategies 表                           │
+│  存储：strategy_type + strategy_config + executor_type + config │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                    ┌───────────┴───────────┐
+                    ▼                       ▼
+        ┌───────────────────┐    ┌───────────────────┐
+        │   手动触发检查     │    │   Cron 定时触发    │
+        │   (API 调用)      │    │   (Phase 5)       │
+        └───────────────────┘    └───────────────────┘
+                    │                       │
+                    └───────────┬───────────┘
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                   StrategyContextBuilder                        │
+│  职责：构建策略执行上下文                                         │
+│  - 拉取行情数据（quote_provider）                                 │
+│  - 拉取持仓信息（db）                                             │
+│  - 拉取历史价格（akshare）                                        │
+│  - 拉取交易记录（db）                                             │
+│  - 不计算量化指标，由策略器按需调用 quant 模块                      │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                       StrategyContext                           │
+│  数据：user_id, stock_code, 行情, 持仓, 历史价格, 交易记录        │
+│  不含量化指标，由策略器内部调用 quant 模块计算                     │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                      BaseStrategy.check()                       │
+│  职责：根据 context 和 config 判断是否触发                         │
+│  返回：CheckResult(triggered, reason, suggested_action, ...)    │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                    ┌───────────┴───────────┐
+                    ▼                       ▼
+            triggered=True           triggered=False
+                    │                       │
+                    ▼                       └── 结束
+┌─────────────────────────────────────────────────────────────────┐
+│                         Executor.execute()                      │
+│  职责：执行触发后的动作                                           │
+│  - AutoTradeExecutor → TradeService                             │
+│  - WebSocketExecutor → 推送通知                                  │
+│  - WebhookExecutor → HTTP 回调                                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 4.2 量化工具模块（独立模块）
 
 量化计算逻辑独立于策略，便于复用和测试。
 
-```python
-# app/quant/indicators.py
-
-def calculate_ma(prices: list[float], period: int) -> float | None:
-    """计算简单移动平均线"""
-    pass
-
-def calculate_ema(prices: list[float], period: int) -> float | None:
-    """计算指数移动平均线"""
-    pass
-
-def calculate_macd(prices: list[float], fast=12, slow=26, signal=9) -> dict | None:
-    """计算MACD指标"""
-    pass
-
-def calculate_rsi(prices: list[float], period=14) -> dict | None:
-    """计算RSI指标"""
-    pass
-
-def calculate_bollinger(prices: list[float], period=20, std_dev=2.0) -> dict | None:
-    """计算布林带"""
-    pass
-
-def calculate_all_indicators(prices: list[float]) -> dict:
-    """一次性计算所有指标，返回统一结果"""
-    pass
+```
+app/quant/
+├── __init__.py      # 统一导出
+├── ma.py            # MA 计算
+├── ema.py           # EMA 计算
+├── macd.py          # MACD 计算（依赖 ema）
+├── rsi.py           # RSI 计算
+├── bollinger.py     # 布林带计算
+└── indicators.py    # calculate_all_indicators 综合计算
 ```
 
 **设计原则**：
@@ -208,46 +261,91 @@ def calculate_all_indicators(prices: list[float]) -> dict:
 - 计算逻辑独立，不依赖外部状态
 
 **调用方**：
-1. `AlertService._build_context()` 构建上下文时调用，结果存入 `context.indicators`
-2. 策略类可按需调用（如历史数据不足时补充计算）
-3. MCP 智能策略通过 `context.indicators` 获取结果
+- `StrategyContextBuilder.calculate_indicators()` 构建上下文时调用
+- 策略类可按需调用（如历史数据不足时补充计算）
 
 ---
 
-### 4.2 价格提醒策略（抽象类）
+### 4.3 StrategyContext（策略上下文）
 
 ```python
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from decimal import Decimal
-from typing import Any, Optional
-
 @dataclass
-class AlertContext:
-    """策略检查上下文"""
+class StrategyContext:
+    """策略执行上下文（原始数据，不包含量化指标）"""
+    # 基础信息
+    user_id: int
     stock_code: str
+
+    # 行情数据
     current_price: Decimal
     open_price: Optional[Decimal] = None
     high_price: Optional[Decimal] = None
     low_price: Optional[Decimal] = None
     prev_close: Optional[Decimal] = None
     volume: Optional[int] = None
+
     # 持仓信息
     position_quantity: Optional[int] = None
     position_avg_cost: Optional[Decimal] = None
     position_profit_loss: Optional[Decimal] = None
-    position_profit_loss_percent: Optional[float] = None
-    # 历史数据
-    history_prices: list[dict[str, Any]] = field(default_factory=list)
-    recent_transactions: list[dict[str, Any]] = field(default_factory=list)
-    # 量化指标（由AlertService调用quant模块计算）
-    indicators: dict[str, Any] = field(default_factory=dict)
-    # 新闻
-    news: list[dict[str, Any]] = field(default_factory=list)
+    position_profit_loss_percent: Optional[Decimal] = None
+
+    # 交易记录
+    recent_transactions: list[dict] = field(default_factory=list)
+
+    # 历史价格（用于量化计算）
+    history_prices: list[dict] = field(default_factory=list)
+```
+
+**设计原则**：
+- 只存储原始数据，不预计算量化指标
+- 量化指标由策略器内部按需调用 `quant` 模块计算
+- 量化计算是纯 CPU 操作，没有 IO 开销，性能影响可忽略
+
+---
+
+### 4.4 StrategyContextBuilder（上下文构建器）
+
+```python
+class StrategyContextBuilder:
+    """策略上下文构建器"""
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def build(self, user_id: int, stock_code: str) -> StrategyContext:
+        """构建策略上下文"""
+        pass
+
+    # 私有方法
+    async def _fetch_quote(self, context: StrategyContext) -> None: pass
+    async def _fetch_position(self, context: StrategyContext) -> None: pass
+    async def _fetch_recent_transactions(self, context: StrategyContext) -> None: pass
+    async def _fetch_history_prices(self, context: StrategyContext) -> None: pass
+```
+
+**设计原则**：
+- 只负责拉取数据（行情、持仓、历史价格、交易记录）
+- 不计算量化指标，由策略器按需调用 `quant` 模块
+
+---
+
+### 4.5 BaseStrategy（策略基类）
+
+```python
+@dataclass
+class CheckResult:
+    """策略检查结果"""
+    triggered: bool
+    reason: Optional[str] = None
+    suggested_action: str = "NOTIFY"  # BUY/SELL/NOTIFY/HOLD
+    suggested_quantity: Optional[int] = None
+    suggested_price: Optional[Decimal] = None
+    details: dict[str, Any] = field(default_factory=dict)
 
 
-class AlertStrategy(ABC):
-    """价格提醒策略抽象基类"""
+class BaseStrategy(ABC):
+    """策略抽象基类"""
 
     @property
     @abstractmethod
@@ -256,16 +354,20 @@ class AlertStrategy(ABC):
         pass
 
     @abstractmethod
-    def check(self, context: AlertContext, config: dict) -> CheckResult:
+    async def check(
+        self,
+        context: StrategyContext,
+        config: dict[str, Any]
+    ) -> CheckResult:
         """
-        检查是否触发提醒
+        检查是否触发
 
         Args:
-            context: 包含行情、持仓、量化指标等的上下文
+            context: 策略执行上下文（行情、持仓、历史价格、量化指标）
             config: 策略配置参数
 
         Returns:
-            CheckResult 包含是否触发、原因、详情
+            CheckResult 包含是否触发、原因、建议动作等
         """
         pass
 ```
@@ -274,88 +376,76 @@ class AlertStrategy(ABC):
 
 ```python
 # 阈值策略 - 不依赖量化指标
-class ThresholdStrategy(AlertStrategy):
+class ThresholdStrategy(BaseStrategy):
     """
-    config: {"upper": 100.0, "lower": 50.0, "percent_upper": 5.0}
+    config: {"upper": 100.0, "lower": 50.0, "action_on_upper": "SELL"}
     价格突破上限或下限时触发
     """
 
-# 均线策略 - 从context.indicators获取MA值
-class MAStrategy(AlertStrategy):
+# 均线策略 - 调用quant模块计算MA
+class MAStrategy(BaseStrategy):
     """
-    config: {"period": 5, "direction": "up"}
-    从context.indicators["ma5"]获取均线值
+    config: {"period": 5, "direction": "up", "action_on_up": "BUY"}
+
+    内部调用 quant.calculate_ma(context.history_prices, period)
     """
 
-# MACD策略 - 从context.indicators获取MACD值
-class MACDStrategy(AlertStrategy):
+# MACD策略 - 调用quant模块计算MACD
+class MACDStrategy(BaseStrategy):
     """
-    config: {"trigger": "golden_cross"}  # golden_cross / death_cross
-    从context.indicators["macd_*"]获取指标
+    config: {"type": "golden_cross", "action_on_golden": "BUY"}
+
+    内部调用 quant.calculate_macd(context.history_prices)
     """
 
-# RSI策略 - 从context.indicators获取RSI值
-class RSIStrategy(AlertStrategy):
+# RSI策略 - 调用quant模块计算RSI
+class RSIStrategy(BaseStrategy):
     """
-    config: {"period": 14, "overbought": 70, "oversold": 30}
-    从context.indicators["rsi14_*"]获取指标
+    config: {"period": 14, "overbought": 70, "action_on_overbought": "SELL"}
+
+    内部调用 quant.calculate_rsi(context.history_prices, period)
     """
 
-# MCP智能策略 - 综合判断
-class MCPSmartStrategy(AlertStrategy):
+# MCP智能策略 - 调用quant模块计算所有指标，交给AI判断
+class MCPSmartStrategy(BaseStrategy):
     """
-    config: {"mcp_server": "...", "tool": "...", "min_confidence": 0.7}
+    config: {"ai_client": callable, "min_confidence": 0.7}
 
     工作流程：
-    1. AlertService._build_context() 调用 quant.calculate_all_indicators()
-    2. 指标结果存入 context.indicators（扁平化格式）:
-       - ma5, ma10, ma20, ma60
-       - ema12, ema26
-       - macd_macd, macd_signal, macd_histogram, macd_trend
-       - rsi6_rsi, rsi6_zone, rsi14_rsi, rsi14_zone
-       - bollinger_upper, bollinger_middle, bollinger_lower
-    3. MCPSmartStrategy._format_indicators() 格式化指标为易读格式
-    4. 构建AI上下文，包含：股票信息、持仓、交易记录、量化指标、新闻
-    5. 返回 requires_ai_decision=True，由外部MCP服务决策
+    1. 从context获取原始数据
+    2. 调用 quant.calculate_all_indicators() 计算量化指标
+    3. 构建AI上下文，调用外部AI服务
+    4. 返回CheckResult
     """
 ```
 
-**量化指标流向**：
+---
 
-```
-akshare历史数据
-       ↓
-AlertService._get_history_prices()
-       ↓
-quant.calculate_all_indicators(closes)
-       ↓
-context.indicators (扁平化字典)
-       ↓
-┌──────────────────┬─────────────────────┐
-│                  │                     │
-MAStrategy         RSIStrategy         MCPSmartStrategy
-(直接使用)         (直接使用)          (_format_indicators格式化后交给AI)
-```
+### 4.6 Executor（执行器）
 
-### 4.3 执行器（抽象类）
-
-执行器负责策略触发后的动作，策略器只返回 true/false + 建议操作，执行器负责具体执行。
+执行器负责策略触发后的动作。
 
 ```python
-from abc import ABC, abstractmethod
-from typing import Any
-from dataclasses import dataclass
-
 @dataclass
 class ExecutionRequest:
     """执行请求"""
     user_id: int
     stock_code: str
-    action: str  # "BUY" / "SELL" / "NOTIFY"
-    quantity: int | None = None
-    price: float | None = None
+    action: str  # BUY/SELL/NOTIFY
+    quantity: Optional[int] = None
+    price: Optional[Decimal] = None
     reason: str = ""
-    details: dict[str, Any] = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ExecutionResult:
+    """执行结果"""
+    success: bool
+    action: str
+    message: str
+    details: dict[str, Any] = field(default_factory=dict)
+
 
 class Executor(ABC):
     """执行器抽象基类"""
@@ -367,16 +457,12 @@ class Executor(ABC):
         pass
 
     @abstractmethod
-    async def execute(self, request: ExecutionRequest) -> bool:
-        """
-        执行动作
-
-        Args:
-            request: 执行请求
-
-        Returns:
-            True 表示执行成功
-        """
+    async def execute(
+        self,
+        request: ExecutionRequest,
+        config: dict[str, Any]
+    ) -> ExecutionResult:
+        """执行动作"""
         pass
 ```
 
@@ -387,59 +473,75 @@ class Executor(ABC):
 class AutoTradeExecutor(Executor):
     """
     executor_type: "AUTO_TRADE"
-
-    收到触发后自动调用交易API完成买入/卖出。
-    适用于：AI自动模拟交易、传统量化自动交易。
+    收到触发后调用 TradeService 完成买入/卖出
     """
-
-    async def execute(self, request: ExecutionRequest) -> bool:
-        if request.action == "BUY":
-            # 调用 TradeService.buy()
-            pass
-        elif request.action == "SELL":
-            # 调用 TradeService.sell()
-            pass
-        return True
 
 # WebSocket通知执行器
 class WebSocketExecutor(Executor):
     """
     executor_type: "WEBSOCKET"
-
-    通过WebSocket推送消息给用户。
-    适用于：AI建议人工执行、传统量化信号提醒。
+    通过WebSocket推送消息给用户
     """
-
-    async def execute(self, request: ExecutionRequest) -> bool:
-        # 推送消息到用户
-        pass
 
 # Webhook执行器
 class WebhookExecutor(Executor):
     """
     executor_type: "WEBHOOK"
-
-    调用外部HTTP接口。
-    适用于：对接第三方通知服务。
+    调用外部HTTP接口
     """
-
-    async def execute(self, request: ExecutionRequest) -> bool:
-        # 发送HTTP请求
-        pass
 ```
 
 #### 策略器与执行器的组合
 
 | 策略器 | 执行器 | 场景 |
 |--------|--------|------|
-| MAStrategy | AutoTradeExecutor | 均线突破自动交易 |
-| RSIStrategy | WebSocketExecutor | RSI信号提醒 |
+| ThresholdStrategy | AutoTradeExecutor | 阈值自动交易 |
+| MAStrategy | WebSocketExecutor | 均线信号提醒 |
 | MCPSmartStrategy | AutoTradeExecutor | AI自动模拟交易 |
 | MCPSmartStrategy | WebSocketExecutor | AI建议人工执行 |
 
 ---
 
-## 五、项目目录结构
+### 4.7 StrategyExecutor（策略执行器 - Phase 5）
+
+```python
+class StrategyExecutor:
+    """策略执行器（Cron 调用）"""
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+        self.context_builder = StrategyContextBuilder(db)
+
+    async def check_and_execute(self, strategy_id: int) -> ExecutionResult:
+        """检查单个策略并执行"""
+        # 1. 获取策略
+        # 2. 构建上下文
+        # 3. 调用策略检查
+        # 4. 如果触发，调用执行器
+        pass
+
+    async def check_all(self, user_id: int = None) -> list[dict]:
+        """检查所有启用的策略"""
+        pass
+```
+
+---
+
+## 五、模块职责划分
+
+| 模块 | 文件 | 职责 |
+|------|------|------|
+| **StrategyService** | `app/services/strategy_service.py` | 策略 CRUD |
+| **StrategyContext** | `app/strategies/context.py` | 策略执行上下文数据结构 |
+| **StrategyContextBuilder** | `app/strategies/context_builder.py` | 构建上下文（拉取数据、计算指标） |
+| **BaseStrategy** | `app/strategies/base.py` | 策略抽象基类 |
+| **StrategyExecutor** | `app/scheduler/strategy_executor.py` | 定时执行策略检查（Phase 5） |
+| **TradeService** | `app/services/trade_service.py` | 交易执行（买入、卖出） |
+| **quant** | `app/quant/` | 量化指标计算 |
+
+---
+
+## 六、项目目录结构
 
 ```
 mock-stock/
@@ -455,7 +557,7 @@ mock-stock/
 │   │   ├── user.py
 │   │   ├── position.py
 │   │   ├── transaction.py
-│   │   ├── price_alert.py
+│   │   ├── strategy.py            # Strategy 模型
 │   │   └── cron_job.py
 │   │
 │   ├── schemas/                   # Pydantic schemas
@@ -463,7 +565,7 @@ mock-stock/
 │   │   ├── user.py
 │   │   ├── position.py
 │   │   ├── transaction.py
-│   │   ├── alert.py
+│   │   ├── strategy.py            # StrategyCreate/Update/Response
 │   │   ├── portfolio.py
 │   │   └── common.py
 │   │
@@ -474,8 +576,8 @@ mock-stock/
 │   │   ├── positions.py
 │   │   ├── portfolio.py
 │   │   ├── trade.py
-│   │   ├── alerts.py              # ✅ 已实现
-│   │   ├── cron.py                # (待实现)
+│   │   ├── strategies.py          # 策略 API
+│   │   ├── cron.py                # (Phase 5)
 │   │   └── quote.py
 │   │
 │   ├── services/                  # 业务逻辑
@@ -484,25 +586,31 @@ mock-stock/
 │   │   ├── position_service.py
 │   │   ├── trade_service.py
 │   │   ├── portfolio_service.py
-│   │   └── alert_service.py       # ✅ 已实现（调用quant模块）
+│   │   └── strategy_service.py    # 策略 CRUD
 │   │
-│   ├── quant/                     # 量化指标计算（独立模块）
+│   ├── quant/                     # 量化指标计算
 │   │   ├── __init__.py
-│   │   └── indicators.py          # MA/EMA/MACD/RSI/Bollinger
+│   │   ├── ma.py
+│   │   ├── ema.py
+│   │   ├── macd.py
+│   │   ├── rsi.py
+│   │   ├── bollinger.py
+│   │   └── indicators.py
 │   │
-│   ├── strategies/                # 价格提醒策略
+│   ├── strategies/                # 策略模块
 │   │   ├── __init__.py
-│   │   ├── base.py                # AlertStrategy + AlertContext
+│   │   ├── base.py                # BaseStrategy + StrategyContext + CheckResult
+│   │   ├── context_builder.py     # StrategyContextBuilder
+│   │   ├── registry.py            # 策略注册表
 │   │   ├── threshold.py           # 阈值策略
-│   │   ├── ma.py                  # 均线策略（使用quant模块）
-│   │   ├── macd.py                # MACD策略（使用quant模块）
-│   │   ├── rsi.py                 # RSI策略（使用quant模块）
-│   │   ├── mcp.py                 # MCP智能策略（AI综合决策）
-│   │   └── registry.py            # 策略注册表
+│   │   ├── ma.py                  # 均线策略
+│   │   ├── macd.py                # MACD策略
+│   │   ├── rsi.py                 # RSI策略
+│   │   └── mcp.py                 # MCP智能策略
 │   │
 │   ├── executors/                 # 执行器
 │   │   ├── __init__.py
-│   │   ├── base.py                # Executor抽象基类
+│   │   ├── base.py                # Executor + ExecutionRequest + ExecutionResult
 │   │   ├── auto_trade.py          # 自动交易执行器
 │   │   ├── websocket.py           # WebSocket通知执行器
 │   │   ├── webhook.py             # Webhook执行器
@@ -513,9 +621,10 @@ mock-stock/
 │   │   ├── base.py                # 行情提供者接口
 │   │   └── akshare_provider.py    # akshare实现(雪球接口)
 │   │
-│   ├── scheduler/                 # 定时任务
+│   ├── scheduler/                 # 定时任务（Phase 5）
 │   │   ├── __init__.py
 │   │   ├── manager.py             # APScheduler管理
+│   │   ├── strategy_executor.py   # StrategyExecutor
 │   │   └── jobs.py                # 任务定义
 │   │
 │   └── db/                        # 数据库
@@ -532,8 +641,10 @@ mock-stock/
 │   ├── test_positions.py
 │   ├── test_trade.py
 │   ├── test_portfolio.py
-│   ├── test_alerts.py             # ✅ 已实现
-│   └── test_quant.py              # ✅ 已实现
+│   ├── test_strategies_api.py     # 策略 API 测试
+│   ├── test_strategy_impl.py      # 策略实现测试
+│   ├── test_executors.py          # 执行器测试
+│   └── test_quant.py              # 量化模块测试
 │
 ├── plan/                          # 文档
 │   ├── requirements.md
@@ -549,20 +660,21 @@ mock-stock/
 
 ---
 
-## 六、实现阶段
+## 七、实现阶段
 
 | 阶段 | 任务 | 状态 |
 |------|------|------|
 | **Phase 1** | 项目初始化、配置、数据库模型 | ✅ 已完成 |
 | **Phase 2** | 用户API、持仓管理API | ✅ 已完成 |
 | **Phase 3** | 交易API、资产估值API（雪球行情） | ✅ 已完成 |
-| **Phase 4** | 价格提醒系统（策略抽象+执行器抽象+AI智能决策） | ✅ 已完成 |
-| **Phase 5** | 定时任务系统（APScheduler集成） | 📋 待开发 |
+| **Phase 4** | 策略系统（策略抽象+执行器抽象+量化模块） | ✅ 已完成 |
+| **Phase 4.5** | 架构重构：命名统一、职责分离、ContextBuilder | 🔄 进行中 |
+| **Phase 5** | 定时任务系统（APScheduler + StrategyExecutor） | 📋 待开发 |
 | **Phase 6** | WebSocket实时推送 | 📋 待开发 |
 
 ---
 
-## 七、依赖包
+## 八、依赖包
 
 ```
 # requirements.txt
@@ -578,6 +690,5 @@ passlib[bcrypt]>=1.7.4             # 密码哈希
 akshare>=1.12.0
 pandas>=2.0.0
 requests>=2.31.0
-aiosmtplib>=3.0.0                  # 异步SMTP
 httpx>=0.26.0                      # 异步HTTP客户端
 ```

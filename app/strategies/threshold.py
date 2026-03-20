@@ -2,10 +2,11 @@
 
 from decimal import Decimal
 
-from .base import AlertStrategy, AlertContext, CheckResult
+from .base import BaseStrategy, CheckResult
+from .context import StrategyContext
 
 
-class ThresholdStrategy(AlertStrategy):
+class ThresholdStrategy(BaseStrategy):
     """
     阈值策略
 
@@ -23,7 +24,7 @@ class ThresholdStrategy(AlertStrategy):
     def strategy_type(self) -> str:
         return "THRESHOLD"
 
-    async def check(self, context: AlertContext, config: dict) -> CheckResult:
+    async def check(self, context: StrategyContext, config: dict) -> CheckResult:
         price = float(context.current_price)
         prev_close = float(context.prev_close) if context.prev_close else None
 

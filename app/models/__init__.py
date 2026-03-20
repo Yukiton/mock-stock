@@ -2,7 +2,7 @@ from .base import Base, TimestampMixin, utcnow
 from .user import User
 from .position import Position
 from .transaction import Transaction
-from .price_alert import PriceAlert
+from .strategy import Strategy
 from .cron_job import CronJob
 
 __all__ = [
@@ -12,6 +12,6 @@ __all__ = [
     "User",
     "Position",
     "Transaction",
-    "PriceAlert",
+    "Strategy",
     "CronJob",
 ]

@@ -9,8 +9,8 @@ from .transaction import (
     TransactionBase, TransactionCreate, TransactionResponse, TradeRequest, TradeResponse
 )
 from .portfolio import PortfolioValue, PortfolioTotal, ProfitLoss, PortfolioProfitLoss
-from .alert import (
-    AlertBase, AlertCreate, AlertUpdate, AlertResponse,
+from .strategy import (
+    StrategyBase, StrategyCreate, StrategyUpdate, StrategyResponse,
     ThresholdConfig, MAConfig, RSIConfig
 )
 
@@ -45,11 +45,11 @@ __all__ = [
     "PortfolioTotal",
     "ProfitLoss",
     "PortfolioProfitLoss",
-    # Alert
-    "AlertBase",
-    "AlertCreate",
-    "AlertUpdate",
-    "AlertResponse",
+    # Strategy
+    "StrategyBase",
+    "StrategyCreate",
+    "StrategyUpdate",
+    "StrategyResponse",
     "ThresholdConfig",
     "MAConfig",
     "RSIConfig",

@@ -2,11 +2,12 @@
 
 from decimal import Decimal
 
-from .base import AlertStrategy, AlertContext, CheckResult
+from .base import BaseStrategy, CheckResult
+from .context import StrategyContext
 from app.quant import calculate_ma
 
 
-class MAStrategy(AlertStrategy):
+class MAStrategy(BaseStrategy):
     """
     均线策略
 
@@ -24,7 +25,7 @@ class MAStrategy(AlertStrategy):
     def strategy_type(self) -> str:
         return "MA"
 
-    async def check(self, context: AlertContext, config: dict) -> CheckResult:
+    async def check(self, context: StrategyContext, config: dict) -> CheckResult:
         period = config.get("period", 5)
         direction = config.get("direction", "both")
 
@@ -32,21 +33,20 @@ class MAStrategy(AlertStrategy):
         action_on_up = config.get("action_on_up", "BUY")
         action_on_down = config.get("action_on_down", "SELL")
 
-        # 从indicators中获取均线值（由AlertService调用quant模块计算）
-        ma_key = f"ma{period}"
-        ma_value = context.indicators.get(ma_key)
+        # 从历史价格计算MA
+        closes = self._extract_closes(context)
+        if not closes or len(closes) < period:
+            return CheckResult(
+                triggered=False,
+                reason=f"无法计算MA{period}，历史数据不足"
+            )
 
+        ma_value = calculate_ma(closes, period)
         if ma_value is None:
-            # 如果indicators中没有，尝试从历史价格计算
-            closes = self._extract_closes(context)
-            if closes and len(closes) >= period:
-                ma_value = calculate_ma(closes, period)
-
-            if ma_value is None:
-                return CheckResult(
-                    triggered=False,
-                    reason=f"无法计算MA{period}，历史数据不足"
-                )
+            return CheckResult(
+                triggered=False,
+                reason=f"无法计算MA{period}"
+            )
 
         price = float(context.current_price)
         ma = float(ma_value)
@@ -84,7 +84,7 @@ class MAStrategy(AlertStrategy):
 
         return CheckResult(triggered=False)
 
-    def _extract_closes(self, context: AlertContext) -> list[float] | None:
+    def _extract_closes(self, context: StrategyContext) -> list[float] | None:
         """从历史价格中提取收盘价列表（从新到旧）"""
         if not context.history_prices:
             return None

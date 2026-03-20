@@ -28,11 +28,20 @@ MA5 上穿 MA20 → 金叉，买入
 
 ---
 
-## 怎么用
+## 核心架构
 
-### 核心设计：策略器 + 执行器
+### 策略器 + 执行器
 
-**策略器**：判断是否触发，返回 true/false + 建议操作（买入/卖出/观望）
+**策略器**：判断是否触发，返回 `CheckResult`
+```json
+{
+  "triggered": true,
+  "reason": "MACD金叉，建议买入",
+  "suggested_action": "BUY",
+  "suggested_quantity": 500,
+  "suggested_price": 15.20
+}
+```
 
 **执行器**：执行触发后的动作（自动交易 / 发送通知）
 
@@ -45,47 +54,89 @@ MA5 上穿 MA20 → 金叉，买入
 | AI 智能策略 | 通知执行器 | AI 建议，人工执行 |
 | 传统量化 | 通知执行器 | 传统量化信号提醒 |
 
-### 流程示意
-
-**AI 自动模拟交易**
+### 架构图
 
 ```
-行情数据 + 持仓信息 + 量化指标
-         ↓
-    AI 策略器判断
-         ↓
-    返回"买入"建议
-         ↓
-   自动交易执行器调用 API
-         ↓
-   更新持仓，等待下次决策
+用户 → StrategyService(CRUD) → strategies 表
+                                ↓
+Cron/手动 → StrategyContextBuilder → StrategyContext（原始数据）
+                                ↓
+                           BaseStrategy.check()
+                                ├── 内部调用 quant 模块计算指标
+                                └── 返回 CheckResult
+                                ↓
+                           Executor.execute()
+                                ↓
+                           TradeService / WebSocket / Webhook
 ```
 
-**AI 建议 + 人工执行**
+### 核心模块
+
+| 模块 | 职责 |
+|------|------|
+| **StrategyService** | 策略 CRUD |
+| **StrategyContextBuilder** | 构建策略执行上下文（行情、持仓、历史数据） |
+| **BaseStrategy** | 策略抽象基类，`check()` 返回 `CheckResult` |
+| **Executor** | 执行器抽象基类，`execute()` 执行动作 |
+| **quant** | 量化指标计算（MA、EMA、MACD、RSI、布林带） |
+| **StrategyExecutor** | 定时执行策略检查和执行器调用（Phase 5） |
+
+---
+
+## 流程示意
+
+### AI 自动模拟交易
 
 ```
-行情数据 + 持仓信息 + 量化指标
+StrategyContextBuilder 构建上下文
          ↓
-    AI 策略器判断
+    行情数据 + 持仓信息 + 历史价格
          ↓
-    返回"买入"建议
+    AI 策略器.check()
          ↓
-   通知执行器推送给用户
+    内部调用 quant 计算量化指标
+         ↓
+    返回 CheckResult(suggested_action="BUY")
+         ↓
+   AutoTradeExecutor.execute()
+         ↓
+   TradeService.buy() 更新持仓
+         ↓
+   等待下次决策
+```
+
+### AI 建议 + 人工执行
+
+```
+StrategyContextBuilder 构建上下文
+         ↓
+    行情数据 + 持仓信息 + 历史价格
+         ↓
+    AI 策略器.check()
+         ↓
+    内部调用 quant 计算量化指标
+         ↓
+    返回 CheckResult(suggested_action="BUY")
+         ↓
+   WebSocketExecutor 推送给用户
          ↓
    用户在真实市场交易
          ↓
-   用户调用 API 记录结果
+   用户调用 Trade API 记录结果
          ↓
    AI 基于真实持仓做下次决策
 ```
 
-### 关键设计
+---
+
+## 关键设计
 
 | 设计 | 原因 |
 |------|------|
 | 策略器只判断，不执行 | 职责分离，AI 不需要知道交易 API |
 | 执行器负责具体动作 | 灵活组合，任意策略 + 任意执行器 |
-| 价格可自定义 | 记录真实成交价，确保持仓成本准确 |
+| StrategyContextBuilder 统一构建上下文 | 避免重复拉取数据 |
+| quant 模块独立 | 量化计算只实现一次，策略器内部按需调用 |
 
 ---
 
@@ -114,8 +165,8 @@ MA5 上穿 MA20 → 金叉，买入
 - **用户系统**：注册登录、账户余额管理
 - **交易系统**：买入卖出、持仓成本计算、交易历史
 - **行情系统**：实时行情（akshare）、持仓市值与盈亏
-- **量化指标**：MA、EMA、MACD、RSI、布林带
-- **提醒系统**：策略器（阈值/均线/MACD/RSI/AI智能）+ 执行器（自动交易/通知）
+- **量化指标**：MA、EMA、MACD、RSI、布林带（独立模块）
+- **策略系统**：策略器（阈值/均线/MACD/RSI/AI智能）+ 执行器（自动交易/通知）
 
 ### 技术栈
 
@@ -125,15 +176,31 @@ FastAPI + SQLite + SQLAlchemy + akshare + APScheduler
 
 ```
 app/
-├── api/          # API 路由
-├── models/       # 数据模型
-├── schemas/      # Pydantic 模式
-├── services/     # 业务逻辑
-├── strategies/   # 策略器（含 AI 智能策略）
-├── executors/    # 执行器（自动交易/通知）
-├── quant/        # 量化指标计算
-├── quote/        # 行情数据源
-└── db/           # 数据库配置
+├── api/              # API 路由
+├── models/           # 数据模型
+├── schemas/          # Pydantic 模式
+├── services/         # 业务逻辑
+├── strategies/       # 策略模块
+│   ├── base.py       # BaseStrategy + StrategyContext + CheckResult
+│   ├── context_builder.py  # StrategyContextBuilder
+│   ├── threshold.py  # 阈值策略
+│   ├── ma.py         # 均线策略
+│   ├── macd.py       # MACD策略
+│   ├── rsi.py        # RSI策略
+│   └── mcp.py        # AI智能策略
+├── executors/        # 执行器
+│   ├── auto_trade.py # 自动交易执行器
+│   ├── websocket.py  # WebSocket通知
+│   └── webhook.py    # HTTP回调
+├── quant/            # 量化指标计算（独立模块）
+│   ├── ma.py
+│   ├── ema.py
+│   ├── macd.py
+│   ├── rsi.py
+│   ├── bollinger.py
+│   └── indicators.py
+├── quote/            # 行情数据源
+└── db/               # 数据库配置
 ```
 
 ### API 接口
@@ -149,8 +216,10 @@ app/
 | 资产 | `GET /portfolio/total` | 总资产 |
 | | `GET /portfolio/profit-loss` | 盈亏情况 |
 | 行情 | `GET /quote/{stock_code}` | 实时行情 |
-| 提醒 | `POST /alerts` | 创建提醒 |
-| | `POST /alerts/{id}/check` | 手动检查 |
+| 策略 | `POST /strategies` | 创建策略 |
+| | `GET /strategies` | 策略列表 |
+| | `PUT /strategies/{id}` | 修改策略 |
+| | `DELETE /strategies/{id}` | 删除策略 |
 
 完整 API 文档：启动后访问 http://localhost:8000/docs
 
@@ -172,21 +241,20 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-### 示例：创建 AI 智能提醒
+### 示例：创建 AI 智能策略
 
 **AI 自动交易**
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/alerts" \
+curl -X POST "http://localhost:8000/api/v1/strategies" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
     "stock_code": "000001",
-    "alert_name": "AI自动交易",
+    "strategy_name": "AI自动交易",
     "strategy_type": "MCP_SMART",
     "strategy_config": {
-      "mcp_server": "my-server",
-      "tool": "analyze_alert"
+      "min_confidence": 0.7
     },
     "executor_type": "AUTO_TRADE"
   }'
@@ -195,16 +263,15 @@ curl -X POST "http://localhost:8000/api/v1/alerts" \
 **AI 建议 + 人工执行**
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/alerts" \
+curl -X POST "http://localhost:8000/api/v1/strategies" \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
     "stock_code": "000001",
-    "alert_name": "AI建议提醒",
+    "strategy_name": "AI建议策略",
     "strategy_type": "MCP_SMART",
     "strategy_config": {
-      "mcp_server": "my-server",
-      "tool": "analyze_alert"
+      "min_confidence": 0.7
     },
     "executor_type": "WEBSOCKET"
   }'
@@ -219,8 +286,9 @@ curl -X POST "http://localhost:8000/api/v1/alerts" \
 | Phase 1 | 项目初始化、数据库模型 | ✅ |
 | Phase 2 | 用户 API、持仓 API | ✅ |
 | Phase 3 | 交易 API、行情 API | ✅ |
-| Phase 4 | 提醒系统、量化指标 | ✅ |
-| Phase 5 | 定时任务 | 待开发 |
+| Phase 4 | 策略系统、量化指标 | ✅ |
+| Phase 4.5 | 架构重构：命名统一、职责分离 | 🔄 |
+| Phase 5 | 定时任务（StrategyExecutor） | 待开发 |
 | Phase 6 | WebSocket 实时推送 | 待开发 |
 
 ---

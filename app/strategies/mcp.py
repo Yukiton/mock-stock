@@ -1,14 +1,14 @@
 """MCP/AI智能策略 - 由AI模型根据多种数据决定是否触发"""
 
-import json
-from typing import Any, Optional, Callable, Awaitable
-from dataclasses import dataclass, field
+from typing import Any, Optional
 from decimal import Decimal
 
-from .base import AlertStrategy, AlertContext, CheckResult
+from .base import BaseStrategy, CheckResult
+from .context import StrategyContext
+from app.quant import calculate_all_indicators
 
 
-class MCPSmartStrategy(AlertStrategy):
+class MCPSmartStrategy(BaseStrategy):
     """
     MCP/AI智能决策策略
 
@@ -38,13 +38,13 @@ class MCPSmartStrategy(AlertStrategy):
     def strategy_type(self) -> str:
         return "MCP_SMART"
 
-    async def check(self, context: AlertContext, config: dict) -> CheckResult:
+    async def check(self, context: StrategyContext, config: dict) -> CheckResult:
         """
-        检查是否触发提醒
+        检查是否触发
 
         构建上下文并调用外部AI服务获取决策。
         """
-        # 构建AI上下文
+        # 构建AI上下文（内部调用量化模块计算指标）
         ai_context = self._build_ai_context(context, config)
 
         # 获取AI决策
@@ -107,11 +107,11 @@ class MCPSmartStrategy(AlertStrategy):
         """
         模拟AI响应（用于测试或未配置AI服务时）
 
-        简单规则：如果RSI存在，根据RSI判断
+        简单规则：根据量化指标判断
         """
         indicators = ai_context.get("data", {}).get("量化指标", {})
 
-        # 尝试从RSI判断
+        # 从量化指标中获取RSI
         rsi14 = None
         if "RSI14" in indicators:
             rsi_str = indicators["RSI14"].get("值", "50")
@@ -177,11 +177,15 @@ class MCPSmartStrategy(AlertStrategy):
             }
         )
 
-    def _build_ai_context(self, context: AlertContext, config: dict) -> dict:
-        """构建AI决策所需的上下文"""
+    def _build_ai_context(self, context: StrategyContext, config: dict) -> dict:
+        """
+        构建AI决策所需的上下文
+
+        内部调用 quant 模块计算量化指标
+        """
         prompt_template = config.get("prompt_template", self._default_prompt_template())
 
-        # 构建上下文数据
+        # 构建基础上下文数据
         context_data = {
             "股票代码": context.stock_code,
             "当前价格": str(context.current_price),
@@ -203,20 +207,28 @@ class MCPSmartStrategy(AlertStrategy):
         if context.recent_transactions:
             context_data["最近交易"] = context.recent_transactions[:5]
 
-        # 添加量化指标
-        if context.indicators:
-            indicators = self._format_indicators(context.indicators)
-            context_data["量化指标"] = indicators
-
-        # 添加新闻
-        if context.news:
-            context_data["相关新闻"] = context.news[:3]
+        # 调用 quant 模块计算量化指标
+        if context.history_prices:
+            closes = self._extract_closes(context)
+            if closes:
+                indicators = calculate_all_indicators(closes)
+                formatted_indicators = self._format_indicators(indicators)
+                context_data["量化指标"] = formatted_indicators
 
         return {
             "prompt_template": prompt_template,
             "data": context_data,
             "stock_code": context.stock_code
         }
+
+    def _extract_closes(self, context: StrategyContext) -> list[float]:
+        """从历史价格中提取收盘价列表（从新到旧）"""
+        closes = []
+        for item in context.history_prices:
+            close = item.get("close") or item.get("收盘")
+            if close is not None:
+                closes.append(float(close))
+        return closes
 
     def _format_indicators(self, indicators: dict) -> dict:
         """格式化量化指标，使其更易读"""
@@ -235,29 +247,32 @@ class MCPSmartStrategy(AlertStrategy):
                 formatted[f"EMA{period}"] = f"{indicators[key]:.2f}"
 
         # MACD指标
-        if "macd_macd" in indicators:
+        if "macd" in indicators:
+            macd = indicators["macd"]
             formatted["MACD"] = {
-                "DIF": f"{indicators.get('macd_macd', 0):.4f}",
-                "DEA": f"{indicators.get('macd_signal', 0):.4f}",
-                "柱状图": f"{indicators.get('macd_histogram', 0):.4f}",
-                "趋势": indicators.get("macd_trend", "neutral")
+                "DIF": f"{macd.get('macd', 0):.4f}",
+                "DEA": f"{macd.get('signal', 0):.4f}",
+                "柱状图": f"{macd.get('histogram', 0):.4f}",
+                "趋势": macd.get("trend", "neutral")
             }
 
         # RSI指标
         for period in [6, 14, 24]:
-            key = f"rsi{period}_rsi"
+            key = f"rsi{period}"
             if key in indicators:
+                rsi = indicators[key]
                 formatted[f"RSI{period}"] = {
-                    "值": f"{indicators[key]:.2f}",
-                    "区域": indicators.get(f"rsi{period}_zone", "neutral")
+                    "值": f"{rsi.get('rsi', 50):.2f}",
+                    "区域": rsi.get("zone", "neutral")
                 }
 
         # 布林带
-        if "bollinger_upper" in indicators:
+        if "bollinger" in indicators:
+            boll = indicators["bollinger"]
             formatted["布林带"] = {
-                "上轨": f"{indicators.get('bollinger_upper', 0):.2f}",
-                "中轨": f"{indicators.get('bollinger_middle', 0):.2f}",
-                "下轨": f"{indicators.get('bollinger_lower', 0):.2f}",
+                "上轨": f"{boll.get('upper', 0):.2f}",
+                "中轨": f"{boll.get('middle', 0):.2f}",
+                "下轨": f"{boll.get('lower', 0):.2f}",
             }
 
         return formatted

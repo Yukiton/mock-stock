@@ -8,7 +8,7 @@ from .base import Base, TimestampMixin
 if TYPE_CHECKING:
     from .position import Position
     from .transaction import Transaction
-    from .price_alert import PriceAlert
+    from .strategy import Strategy
 
 
 class User(Base, TimestampMixin):
@@ -27,8 +27,8 @@ class User(Base, TimestampMixin):
     transactions: Mapped[List["Transaction"]] = relationship(
         "Transaction", back_populates="user", cascade="all, delete-orphan"
     )
-    alerts: Mapped[List["PriceAlert"]] = relationship(
-        "PriceAlert", back_populates="user", cascade="all, delete-orphan"
+    strategies: Mapped[List["Strategy"]] = relationship(
+        "Strategy", back_populates="user", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:

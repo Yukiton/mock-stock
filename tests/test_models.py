@@ -3,7 +3,7 @@ import pytest
 from sqlalchemy import select
 from decimal import Decimal
 
-from app.models import User, Position, Transaction, PriceAlert, CronJob
+from app.models import User, Position, Transaction, Strategy, CronJob
 
 
 @pytest.mark.asyncio
@@ -66,24 +66,24 @@ async def test_create_transaction(db_session, test_user):
 
 
 @pytest.mark.asyncio
-async def test_create_price_alert(db_session, test_user):
-    """测试创建价格提醒"""
-    alert = PriceAlert(
+async def test_create_strategy(db_session, test_user):
+    """测试创建策略"""
+    strategy = Strategy(
         user_id=test_user.id,
         stock_code="000001",
-        alert_name="突破20元提醒",
+        strategy_name="突破20元策略",
         strategy_type="THRESHOLD",
         strategy_config={"upper": 20.0, "lower": 10.0},
         executor_type="WEBSOCKET",
         executor_config={},
     )
-    db_session.add(alert)
+    db_session.add(strategy)
     await db_session.commit()
-    await db_session.refresh(alert)
+    await db_session.refresh(strategy)
 
-    assert alert.id is not None
-    assert alert.strategy_type == "THRESHOLD"
-    assert alert.enabled is True
+    assert strategy.id is not None
+    assert strategy.strategy_type == "THRESHOLD"
+    assert strategy.enabled is True
 
 
 @pytest.mark.asyncio

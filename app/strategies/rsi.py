@@ -2,12 +2,16 @@
 
 from decimal import Decimal
 
-from .base import AlertStrategy, AlertContext, CheckResult
+from .base import BaseStrategy, CheckResult
+from .context import StrategyContext
+from app.quant import calculate_rsi
 
 
-class RSIStrategy(AlertStrategy):
+class RSIStrategy(BaseStrategy):
     """
     RSI策略
+
+    使用quant模块计算RSI指标。
 
     config: {
         "period": 14,          # RSI周期
@@ -23,7 +27,7 @@ class RSIStrategy(AlertStrategy):
     def strategy_type(self) -> str:
         return "RSI"
 
-    async def check(self, context: AlertContext, config: dict) -> CheckResult:
+    async def check(self, context: StrategyContext, config: dict) -> CheckResult:
         period = config.get("period", 14)
         overbought = config.get("overbought", 70)
         oversold = config.get("oversold", 30)
@@ -33,18 +37,22 @@ class RSIStrategy(AlertStrategy):
         action_on_overbought = config.get("action_on_overbought", "SELL")
         action_on_oversold = config.get("action_on_oversold", "BUY")
 
-        # 从indicators获取或计算RSI
-        rsi_key = f"rsi{period}"
-        rsi = context.indicators.get(rsi_key)
-
-        if rsi is None:
-            rsi = self._calculate_rsi(context, period)
-
-        if rsi is None:
+        # 从历史价格计算RSI
+        closes = self._extract_closes(context)
+        if not closes or len(closes) < period + 1:
             return CheckResult(
                 triggered=False,
                 reason=f"无法计算RSI{period}，历史数据不足"
             )
+
+        rsi_data = calculate_rsi(closes, period)
+        if rsi_data is None:
+            return CheckResult(
+                triggered=False,
+                reason=f"无法计算RSI{period}"
+            )
+
+        rsi = rsi_data.get("rsi")
 
         details = {
             "rsi_period": period,
@@ -70,48 +78,15 @@ class RSIStrategy(AlertStrategy):
 
         return CheckResult(triggered=False)
 
-    def calculate_indicators(self, context: AlertContext) -> dict:
-        """计算RSI指标"""
-        result = {}
-        for period in [6, 14, 24]:
-            rsi = self._calculate_rsi(context, period)
-            if rsi is not None:
-                result[f"rsi{period}"] = rsi
-        return result
-
-    def _calculate_rsi(self, context: AlertContext, period: int) -> float | None:
-        """计算RSI指标"""
-        if len(context.history_prices) < period + 1:
+    def _extract_closes(self, context: StrategyContext) -> list[float] | None:
+        """从历史价格中提取收盘价列表（从新到旧）"""
+        if not context.history_prices:
             return None
 
-        # 提取收盘价
         closes = []
         for item in context.history_prices:
             close = item.get("close") or item.get("收盘")
             if close is not None:
                 closes.append(float(close))
 
-        if len(closes) < period + 1:
-            return None
-
-        # 计算价格变化
-        changes = [closes[i] - closes[i + 1] for i in range(len(closes) - 1)]
-
-        if len(changes) < period:
-            return None
-
-        # 取最近period个变化
-        recent_changes = changes[:period]
-        gains = [c for c in recent_changes if c > 0]
-        losses = [-c for c in recent_changes if c < 0]
-
-        avg_gain = sum(gains) / period if gains else 0
-        avg_loss = sum(losses) / period if losses else 0
-
-        if avg_loss == 0:
-            return 100.0
-
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-
-        return rsi
+        return closes if closes else None

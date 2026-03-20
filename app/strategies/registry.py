@@ -2,7 +2,7 @@
 
 from typing import Type
 
-from .base import AlertStrategy
+from .base import BaseStrategy
 from .threshold import ThresholdStrategy
 from .ma import MAStrategy
 from .macd import MACDStrategy
@@ -11,7 +11,7 @@ from .mcp import MCPSmartStrategy
 
 
 # 策略类型到类的映射
-_strategy_registry: dict[str, Type[AlertStrategy]] = {
+_strategy_registry: dict[str, Type[BaseStrategy]] = {
     "THRESHOLD": ThresholdStrategy,
     "MA": MAStrategy,
     "MACD": MACDStrategy,
@@ -21,7 +21,7 @@ _strategy_registry: dict[str, Type[AlertStrategy]] = {
 }
 
 
-def get_strategy(strategy_type: str) -> AlertStrategy | None:
+def get_strategy(strategy_type: str) -> BaseStrategy | None:
     """
     获取策略实例
 
@@ -37,7 +37,7 @@ def get_strategy(strategy_type: str) -> AlertStrategy | None:
     return strategy_class()
 
 
-def register_strategy(strategy_type: str, strategy_class: Type[AlertStrategy]) -> None:
+def register_strategy(strategy_type: str, strategy_class: Type[BaseStrategy]) -> None:
     """
     注册自定义策略
 
@@ -51,18 +51,3 @@ def register_strategy(strategy_type: str, strategy_class: Type[AlertStrategy]) -
 def list_strategies() -> list[str]:
     """获取所有已注册的策略类型"""
     return list(_strategy_registry.keys())
-
-
-__all__ = [
-    "AlertStrategy",
-    "AlertContext",
-    "CheckResult",
-    "ThresholdStrategy",
-    "MAStrategy",
-    "MACDStrategy",
-    "RSIStrategy",
-    "MCPSmartStrategy",
-    "get_strategy",
-    "register_strategy",
-    "list_strategies",
-]
